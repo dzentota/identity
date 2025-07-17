@@ -4,7 +4,7 @@ A secure and extensible authentication library for PHP applications.
 
 [![Latest Version on Packagist](https://img.shields.io/packagist/v/dzentota/identity.svg)](https://packagist.org/packages/dzentota/identity)
 [![PHP Version](https://img.shields.io/packagist/php-v/dzentota/identity.svg)](https://packagist.org/packages/dzentota/identity)
-[![License](https://img.shields.io/github/license/dzentota/identity.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 
 ## Table of Contents
 
