@@ -13,7 +13,6 @@ use Dzentota\Session\Cookie\CookieManager;
 use Dzentota\Session\SessionManager;
 use Dzentota\Session\Storage\CacheStorage;
 use Nyholm\Psr7\ServerRequest;
-use Psr\Http\Message\ServerRequestInterface;
 
 // Example credential store implementation (same as in basic-usage.php)
 class ExampleCredentialStore implements \Dzentota\Identity\CredentialStore
@@ -30,7 +29,7 @@ class ExampleCredentialStore implements \Dzentota\Identity\CredentialStore
         ];
     }
 
-    public function fetchByUsername(ServerRequestInterface $request, string $username): ?array
+    public function fetchByUsername(string $username): ?array
     {
         if (!isset($this->users[$username])) {
             return null;
@@ -42,7 +41,7 @@ class ExampleCredentialStore implements \Dzentota\Identity\CredentialStore
         ];
     }
 
-    public function updateCredentials(ServerRequestInterface $request, string $userId, string $newHash): void
+    public function updateCredentials(string $userId, string $newHash): void
     {
         foreach ($this->users as $username => $userData) {
             if ($userData['id'] === $userId) {
@@ -52,7 +51,7 @@ class ExampleCredentialStore implements \Dzentota\Identity\CredentialStore
         }
     }
 
-    public function fetchIdentity(ServerRequestInterface $request, string $userId): ?\Dzentota\Identity\Identity
+    public function fetchIdentity(string $userId): ?\Dzentota\Identity\Identity
     {
         foreach ($this->users as $userData) {
             if ($userData['id'] === $userId) {
@@ -171,17 +170,17 @@ echo "=== Authentication Test ===\n\n";
 
 // Step 1: Try accessing profile before login (should fail)
 echo "Step 1: Accessing profile before login\n";
-if (!$authenticator->check($profileRequest)) {
+if (!$authenticator->isAuthenticated($profileRequest)) {
     echo "✓ Authentication check correctly returns false\n";
 } else {
     echo "✗ Authentication check incorrectly returns true\n";
 }
 
-$identity = $authenticator->getIdentityFromSession($profileRequest);
+$identity = $authenticator->getCurrentIdentity($profileRequest);
 if ($identity === null) {
-    echo "✓ getIdentityFromSession() correctly returns null\n";
+    echo "✓ getCurrentIdentity() correctly returns null\n";
 } else {
-    echo "✗ getIdentityFromSession() incorrectly returns an identity\n";
+    echo "✗ getCurrentIdentity() incorrectly returns an identity\n";
 }
 
 // Step 2: Perform login
@@ -198,18 +197,18 @@ try {
 
 // Step 3: Check authentication after login
 echo "\nStep 3: Checking authentication after login\n";
-if ($authenticator->check($profileRequest)) {
+if ($authenticator->isAuthenticated($profileRequest)) {
     echo "✓ Authentication check correctly returns true\n";
 } else {
     echo "✗ Authentication check incorrectly returns false\n";
 }
 
-$identity = $authenticator->getIdentityFromSession($profileRequest);
+$identity = $authenticator->getCurrentIdentity($profileRequest);
 if ($identity !== null) {
-    echo "✓ getIdentityFromSession() correctly returns an identity\n";
+    echo "✓ getCurrentIdentity() correctly returns an identity\n";
     echo "✓ Authenticated user ID: " . $identity->getId() . "\n";
 } else {
-    echo "✗ getIdentityFromSession() incorrectly returns null\n";
+    echo "✗ getCurrentIdentity() incorrectly returns null\n";
 }
 
 // Step 4: Logout
@@ -219,7 +218,7 @@ echo "✓ Logout executed\n";
 
 // Step 5: Check authentication after logout
 echo "\nStep 5: Checking authentication after logout\n";
-if (!$authenticator->check($profileRequest)) {
+if (!$authenticator->isAuthenticated($profileRequest)) {
     echo "✓ Authentication check correctly returns false after logout\n";
 } else {
     echo "✗ Authentication check incorrectly returns true after logout\n";
