@@ -37,12 +37,6 @@ The dzentota/identity library provides a secure, modern authentication solution 
 
 Built with a clean, interface-driven architecture, the library allows for flexibility and extensibility while maintaining a simple, straightforward API.
 
-## Overview
-
-The dzentota/identity library provides a secure, modern authentication solution for PHP applications. It is designed around best security practices, with special attention to OWASP recommendations, and uses Argon2id (the winner of the Password Hashing Competition) for password hashing.
-
-Built with a clean, interface-driven architecture, the library allows for flexibility and extensibility while maintaining a simple, straightforward API.
-
 ## Features
 
 - **Secure Password Storage**: Uses Argon2id algorithm for password hashing
