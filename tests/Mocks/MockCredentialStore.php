@@ -4,7 +4,6 @@ namespace Dzentota\Identity\Tests\Mocks;
 
 use Dzentota\Identity\CredentialStore;
 use Dzentota\Identity\Identity;
-use Psr\Http\Message\ServerRequestInterface;
 
 class MockCredentialStore implements CredentialStore
 {
@@ -21,12 +20,12 @@ class MockCredentialStore implements CredentialStore
         ];
     }
 
-    public function fetchByUsername(ServerRequestInterface $request, string $username): ?array
+    public function fetchByUsername(string $username): ?array
     {
         return $this->credentials[$username] ?? null;
     }
 
-    public function updateCredentials(ServerRequestInterface $request, string $userId, string $newHash): void
+    public function updateCredentials(string $userId, string $newHash): void
     {
         foreach ($this->credentials as $username => $data) {
             if ($data['id'] === $userId) {
@@ -36,7 +35,7 @@ class MockCredentialStore implements CredentialStore
         }
     }
 
-    public function fetchIdentity(ServerRequestInterface $request, string $userId): ?Identity
+    public function fetchIdentity(string $userId): ?Identity
     {
         return $this->users[$userId] ?? null;
     }

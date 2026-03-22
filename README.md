@@ -31,20 +31,32 @@ The dzentota/identity library provides a secure, modern authentication solution 
 
 Built with a clean, interface-driven architecture, the library allows for flexibility and extensibility while maintaining a simple, straightforward API.
 
+## Overview
+
+The dzentota/identity library provides a secure, modern authentication solution for PHP applications. It is designed around best security practices, with special attention to OWASP recommendations, and uses Argon2id (the winner of the Password Hashing Competition) for password hashing.
+
+Built with a clean, interface-driven architecture, the library allows for flexibility and extensibility while maintaining a simple, straightforward API.
+
 ## Features
 
 - **Secure Password Storage**: Uses Argon2id algorithm for password hashing
+- **Timing-Attack Protection**: Constant-time comparison on every login attempt, even when a username is not found
 - **Interface-Driven Design**: Easily extend or replace components with your own implementations
+- **Clean Layer Separation**: `CredentialStore` is a pure persistence interface — no HTTP coupling
 - **Stateful Sessions**: Server-side session management with integration to dzentota/session
-- **PSR-15 Middleware**: Full integration with dzentota/router and other PSR-15 compatible frameworks
+- **PSR-15 Middleware**: Full integration with PSR-15 compatible routers and frameworks
+- **PSR-17 Response Factory**: `RequireAuthentication` accepts any PSR-17 `ResponseFactoryInterface`
 - **Password Rehashing**: Automatic upgrades of password hashes when algorithm parameters change
 - **Session Fixation Protection**: Automatic session regeneration on login
+- **Full Session Destruction on Logout**: Entire session is destroyed on logout, not just auth keys
 
 ## Requirements
 
 - PHP 7.4 or higher
-- dzentota/session ^1.0
-- PSR-15 compatible HTTP middleware components
+- `psr/http-message` ^1.0
+- `psr/http-factory` ^1.0
+- `psr/http-server-middleware` ^1.0
+- `dzentota/session` (dev-main)
 
 ## Installation
 
@@ -63,7 +75,6 @@ First, create an implementation of the `CredentialStore` interface to connect to
 ```php
 use Dzentota\Identity\CredentialStore;
 use Dzentota\Identity\Identity;
-use Psr\Http\Message\ServerRequestInterface;
 
 class MyDatabaseStore implements CredentialStore
 {
@@ -74,7 +85,7 @@ class MyDatabaseStore implements CredentialStore
         $this->db = $db;
     }
     
-    public function fetchByUsername(ServerRequestInterface $request, string $username): ?array
+    public function fetchByUsername(string $username): ?array
     {
         $stmt = $this->db->prepare("SELECT id, password_hash FROM users WHERE username = :username");
         $stmt->execute(['username' => $username]);
@@ -85,21 +96,21 @@ class MyDatabaseStore implements CredentialStore
         }
         
         return [
-            'id' => $user['id'],
-            'hash' => $user['password_hash']
+            'id'   => $user['id'],
+            'hash' => $user['password_hash'],
         ];
     }
     
-    public function updateCredentials(ServerRequestInterface $request, string $userId, string $newHash): void
+    public function updateCredentials(string $userId, string $newHash): void
     {
         $stmt = $this->db->prepare("UPDATE users SET password_hash = :hash WHERE id = :id");
         $stmt->execute([
             'hash' => $newHash,
-            'id' => $userId
+            'id'   => $userId,
         ]);
     }
     
-    public function fetchIdentity(ServerRequestInterface $request, string $userId): ?Identity
+    public function fetchIdentity(string $userId): ?Identity
     {
         $stmt = $this->db->prepare("SELECT * FROM users WHERE id = :id");
         $stmt->execute(['id' => $userId]);
@@ -199,32 +210,33 @@ try {
 }
 
 // Check if user is authenticated
-if ($authenticator->check($request)) {
+if ($authenticator->isAuthenticated($request)) {
     // User is logged in
-    $identity = $authenticator->getIdentityFromSession($request);
+    $identity = $authenticator->getCurrentIdentity($request);
     echo "Hello, " . $identity->getName();
 } else {
     // User is not logged in
     echo "Please log in";
 }
 
-// Get current identity
-$identity = $authenticator->getCurrentIdentity($request);
-// or use the static helper
+// Retrieve identity injected by middleware into request attributes
 $identity = Authenticator::getIdentity($request);
 
-// Logout
+// Logout — destroys the entire session
 $authenticator->logout($request);
 ```
 
 ### Protecting Routes
 
-The library provides middleware for integrating with your router:
+The library provides middleware for integrating with your router. `RequireAuthentication` requires a
+PSR-17 `ResponseFactoryInterface` to build responses — use any compliant implementation:
 
 ```php
 use Dzentota\Identity\Middleware\RequireAuthentication;
 use Dzentota\Identity\Middleware\InjectIdentity;
-use dzentota\Router\Router;
+use Nyholm\Psr7\Factory\Psr17Factory;
+
+$responseFactory = new Psr17Factory(); // or any PSR-17 implementation
 
 $router = new Router();
 
@@ -232,11 +244,11 @@ $router = new Router();
 $router->get('/', HomeController::class);
 $router->post('/login', LoginController::class);
 
-// Protected routes
+// Protected routes — unauthenticated requests receive 401 JSON
 $router->group('/admin', function (Router $router) {
     $router->get('/dashboard', DashboardController::class);
     $router->get('/users', UsersController::class);
-})->middleware(new RequireAuthentication($authenticator));
+})->middleware(new RequireAuthentication($authenticator, $responseFactory));
 
 // Routes that may have authentication but don't require it
 $router->get('/profile', ProfileController::class)
@@ -262,7 +274,7 @@ public function handle(ServerRequestInterface $request): ResponseInterface
 
 ### Custom Credential Store
 
-For more advanced use cases, you can extend the `AbstractCredentialStore` class:
+You can implement `CredentialStore` directly or extend `AbstractCredentialStore` as a convenience base class:
 
 ```php
 use Dzentota\Identity\AbstractCredentialStore;
@@ -276,9 +288,26 @@ class RedisCredentialStore extends AbstractCredentialStore
         $this->redis = $redis;
     }
     
-    // Implement required methods
+    public function fetchByUsername(string $username): ?array
+    {
+        // ...
+    }
+    
+    public function updateCredentials(string $userId, string $newHash): void
+    {
+        // ...
+    }
+    
+    public function fetchIdentity(string $userId): ?Identity
+    {
+        // ...
+    }
 }
 ```
+
+> **Note:** `CredentialStore` methods do not receive the HTTP request. If you need request-scoped
+> context (e.g. tenant resolution), resolve it before constructing the store and inject it via the
+> store's constructor.
 
 ### Custom Identity Class
 
@@ -327,10 +356,12 @@ $authenticator = new Authenticator(
 
 ## Security Considerations
 
-- The library uses Argon2id for password hashing, which is the current recommended algorithm.
-- Session IDs are regenerated on login to prevent session fixation attacks.
-- Cookies are configured with HttpOnly and SameSite flags to prevent XSS and CSRF attacks.
-- Use HTTPS in production environments to prevent MITM attacks.
+- **Argon2id hashing**: The current OWASP-recommended algorithm for password storage.
+- **Timing-attack prevention**: When a username is not found, the library performs a constant-time dummy `password_verify()` call to eliminate timing differences that could reveal valid usernames.
+- **Session fixation prevention**: Session ID is regenerated immediately on login.
+- **Full session destruction on logout**: `logout()` calls `SessionManager::destroy()`, removing all session data rather than just clearing auth keys.
+- **Config validation**: The constructor rejects invalid Argon2id parameters (non-positive integers) rather than silently passing them to `password_hash()`.
+- **Use HTTPS**: Configure cookies with `Secure`, `HttpOnly`, and `SameSite=Strict` flags, and serve exclusively over HTTPS in production.
 
 ## Integration Examples
 

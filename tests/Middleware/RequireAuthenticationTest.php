@@ -7,6 +7,7 @@ use Dzentota\Identity\Middleware\RequireAuthentication;
 use Dzentota\Identity\Tests\Mocks\MockCredentialStore;
 use Dzentota\Identity\Tests\Mocks\MockSessionManager;
 use Dzentota\Session\SessionManager;
+use Nyholm\Psr7\Factory\Psr17Factory;
 use Nyholm\Psr7\Response;
 use Nyholm\Psr7\ServerRequest;
 use PHPUnit\Framework\TestCase;
@@ -30,7 +31,7 @@ class RequireAuthenticationTest extends TestCase
             $this->credentialStore,
             $this->sessionManager
         );
-        $this->middleware = new RequireAuthentication($this->authenticator);
+        $this->middleware = new RequireAuthentication($this->authenticator, new Psr17Factory());
     }
 
     protected function tearDown(): void

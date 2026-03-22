@@ -18,16 +18,6 @@ class AuthenticationException extends \Exception
     }
 
     /**
-     * Create a new authentication exception for when a user is not found.
-     *
-     * @return self
-     */
-    public static function userNotFound(): self
-    {
-        return new self('User not found');
-    }
-
-    /**
      * Create a new authentication exception for when authentication is required.
      *
      * @return self

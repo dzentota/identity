@@ -104,9 +104,7 @@ class AuthenticatorTest extends TestCase
 
     public function testGetIdentity(): void
     {
-        $identity = $this->credentialStore->fetchIdentity(
-            new ServerRequest('GET', '/'), 'user123'
-        );
+        $identity = $this->credentialStore->fetchIdentity('user123');
 
         $request = new ServerRequest('GET', '/');
         $request = $request->withAttribute('identity', $identity);

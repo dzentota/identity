@@ -39,7 +39,7 @@ class InjectIdentity implements MiddlewareInterface
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         // Try to get the current identity from the session
-        $identity = $this->authenticator->getIdentityFromSession($request);
+        $identity = $this->authenticator->getCurrentIdentity($request);
 
         // If the user is authenticated, add the identity to the request
         if ($identity) {
