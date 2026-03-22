@@ -20,6 +20,12 @@ A secure and extensible authentication library for PHP applications.
   - [Custom Credential Store](#custom-credential-store)
   - [Custom Identity Class](#custom-identity-class)
   - [Password Rehashing](#password-rehashing)
+- [PASETO Token Authentication](#paseto-token-authentication)
+  - [Setup](#paseto-setup)
+  - [Issuing Tokens](#issuing-tokens)
+  - [Protecting API Routes](#protecting-api-routes)
+  - [Stateless vs. Semi-Stateful](#stateless-vs-semi-stateful)
+  - [Hybrid Web + API](#hybrid-web--api)
 - [Security Considerations](#security-considerations)
 - [Integration Examples](#integration-examples)
 - [Contributing](#contributing)
@@ -45,10 +51,11 @@ Built with a clean, interface-driven architecture, the library allows for flexib
 - **Clean Layer Separation**: `CredentialStore` is a pure persistence interface — no HTTP coupling
 - **Stateful Sessions**: Server-side session management with integration to dzentota/session
 - **PSR-15 Middleware**: Full integration with PSR-15 compatible routers and frameworks
-- **PSR-17 Response Factory**: `RequireAuthentication` accepts any PSR-17 `ResponseFactoryInterface`
+- **PSR-17 Response Factory**: `RequireAuthentication` and `RequirePasetoToken` accept any PSR-17 `ResponseFactoryInterface`
 - **Password Rehashing**: Automatic upgrades of password hashes when algorithm parameters change
 - **Session Fixation Protection**: Automatic session regeneration on login
 - **Full Session Destruction on Logout**: Entire session is destroyed on logout, not just auth keys
+- **PASETO Token Authentication**: First-class support for API / mobile / microservice auth via [PASETO v4.local](https://github.com/paragonie/paseto) (symmetric-key authenticated encryption)
 
 ## Requirements
 
@@ -57,6 +64,7 @@ Built with a clean, interface-driven architecture, the library allows for flexib
 - `psr/http-factory` ^1.0
 - `psr/http-server-middleware` ^1.0
 - `dzentota/session` (dev-main)
+- `paragonie/paseto` ^3.5 (pulled in automatically)
 
 ## Installation
 
@@ -354,6 +362,143 @@ $authenticator = new Authenticator(
 );
 ```
 
+## PASETO Token Authentication
+
+PASETO (Platform-Agnostic Security Tokens) is the recommended alternative to JWT. The library
+supports **v4.local** — symmetric-key authenticated encryption — which is ideal for APIs, mobile
+clients, and microservices that cannot use server-side sessions.
+
+Both session and token auth produce the same `Identity` interface, so `Authenticator::getIdentity($request)`
+works regardless of which mechanism was used.
+
+### PASETO Setup
+
+Generate a 32-byte symmetric key and persist its encoded form (e.g. in an environment variable).
+**Never regenerate the key on each boot** — doing so invalidates all outstanding tokens.
+
+```php
+use ParagonIE\Paseto\Keys\Base\SymmetricKey;
+use Dzentota\Identity\Token\PasetoTokenService;
+
+// Run once to generate; store the result in your config/secrets:
+$key = SymmetricKey::generate();
+echo $key->encode(); // base64url string — put this in PASETO_KEY env var
+
+// On every boot, load the persisted key:
+$key          = SymmetricKey::fromEncodedString($_ENV['PASETO_KEY']);
+$tokenService = new PasetoTokenService($key, [
+    'expiry' => '+15 minutes', // any DateTimeImmutable-compatible expression
+    'issuer' => 'myapp',       // optional iss claim
+]);
+```
+
+### Issuing Tokens
+
+Issue a token immediately after a successful password-based login:
+
+```php
+use Dzentota\Identity\Authenticator;
+use Dzentota\Identity\Exception\AuthenticationException;
+
+try {
+    // Verify credentials and start a session (for web) or just get the Identity (for API):
+    $identity = $authenticator->login($request, $username, $password);
+
+    // Issue a PASETO token with optional custom claims:
+    $token = $tokenService->issue($identity, ['role' => 'admin']);
+
+    // Return the token to the API client:
+    return new JsonResponse(['token' => $token]);
+} catch (AuthenticationException $e) {
+    return new JsonResponse(['error' => 'Invalid credentials'], 401);
+}
+```
+
+On subsequent requests, the client sends the token in the `Authorization` header:
+
+```
+Authorization: Bearer v4.local.<...>
+```
+
+### Protecting API Routes
+
+Use `RequirePasetoToken` to guard routes that require a valid token.
+Unauthenticated requests receive a `401 Unauthorized` JSON response.
+
+```php
+use Dzentota\Identity\Middleware\RequirePasetoToken;
+use Dzentota\Identity\Middleware\InjectPasetoIdentity;
+use Nyholm\Psr7\Factory\Psr17Factory;
+
+$responseFactory = new Psr17Factory(); // any PSR-17 implementation
+
+// Hard gate — 401 if no valid token:
+$router->group('/api', function (Router $router) {
+    $router->get('/me', ProfileApiController::class);
+    $router->get('/orders', OrdersApiController::class);
+})->middleware(new RequirePasetoToken($tokenService, $responseFactory));
+
+// Soft inject — identity available when token present, null otherwise:
+$router->get('/feed', FeedController::class)
+    ->middleware(new InjectPasetoIdentity($tokenService));
+```
+
+In any controller, read the resolved identity the same way as with sessions:
+
+```php
+use Dzentota\Identity\Authenticator;
+
+public function handle(ServerRequestInterface $request): ResponseInterface
+{
+    $identity = Authenticator::getIdentity($request); // works for both session and token auth
+    return new JsonResponse(['userId' => $identity->getId()]);
+}
+```
+
+For tokens issued without a `CredentialStore`, the identity is a `TokenIdentity` and exposes
+custom claims directly:
+
+```php
+use Dzentota\Identity\Token\TokenIdentity;
+
+$identity = Authenticator::getIdentity($request);
+if ($identity instanceof TokenIdentity) {
+    $role   = $identity->getClaim('role');
+    $tenant = $identity->getClaim('tenant', 'default');
+}
+```
+
+### Stateless vs. Semi-Stateful
+
+| Mode | How | Trade-off |
+|---|---|---|
+| **Stateless** | Construct `PasetoTokenService` without a `CredentialStore` | No DB hit per request; cannot revoke individual tokens |
+| **Semi-stateful** | Pass a `CredentialStore` as the third argument | DB lookup on every request; instant revocation by deleting the user record |
+
+```php
+// Stateless — identity built from token claims only:
+$tokenService = new PasetoTokenService($key, ['expiry' => '+15 minutes']);
+
+// Semi-stateful — full Identity fetched from DB on each verified request:
+$tokenService = new PasetoTokenService($key, ['expiry' => '+15 minutes'], $credentialStore);
+```
+
+### Hybrid Web + API
+
+Session and token middleware can coexist on different route groups:
+
+```php
+// Web routes — session-based auth
+$router->group('/app', function (Router $router) {
+    $router->get('/dashboard', DashboardController::class);
+})->middleware(new RequireAuthentication($authenticator, $responseFactory));
+
+// API routes — token-based auth
+$router->group('/api', function (Router $router) {
+    $router->get('/data', DataApiController::class);
+})->middleware(new RequirePasetoToken($tokenService, $responseFactory));
+```
+
 ## Security Considerations
 
 - **Argon2id hashing**: The current OWASP-recommended algorithm for password storage.
@@ -361,6 +506,8 @@ $authenticator = new Authenticator(
 - **Session fixation prevention**: Session ID is regenerated immediately on login.
 - **Full session destruction on logout**: `logout()` calls `SessionManager::destroy()`, removing all session data rather than just clearing auth keys.
 - **Config validation**: The constructor rejects invalid Argon2id parameters (non-positive integers) rather than silently passing them to `password_hash()`.
+- **PASETO token security**: PASETO v4.local uses XChaCha20 encryption + BLAKE2b-MAC. Tokens are tamper-evident and confidential. Keep your symmetric key secret; rotate it to invalidate all outstanding tokens.
+- **Token expiry**: Keep token lifetimes short (15–60 minutes). There is no built-in revocation list — use the semi-stateful mode (pass a `CredentialStore` to `PasetoTokenService`) or a separate deny-list (e.g. a Redis set of `jti` claims) if you need immediate revocation.
 - **Use HTTPS**: Configure cookies with `Secure`, `HttpOnly`, and `SameSite=Strict` flags, and serve exclusively over HTTPS in production.
 
 ## Integration Examples
