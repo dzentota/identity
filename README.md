@@ -53,7 +53,7 @@ Built with a clean, interface-driven architecture, the library allows for flexib
 
 ## Requirements
 
-- PHP 7.4 or higher
+- PHP 8.3 or higher
 - `psr/http-message` ^1.0
 - `psr/http-factory` ^1.0
 - `psr/http-server-middleware` ^1.0
@@ -247,10 +247,10 @@ $router->get('/', HomeController::class);
 $router->post('/login', LoginController::class);
 
 // Protected routes — unauthenticated requests receive 401 JSON
-$router->group('/admin', function (Router $router) {
+$router->addGroup('/admin', function (Router $router) {
     $router->get('/dashboard', DashboardController::class);
     $router->get('/users', UsersController::class);
-})->middleware(new RequireAuthentication($authenticator, $responseFactory));
+}, [new RequireAuthentication($authenticator, $responseFactory)]);
 
 // Routes that may have authentication but don't require it
 $router->get('/profile', ProfileController::class)
@@ -273,6 +273,26 @@ public function handle(ServerRequestInterface $request): ResponseInterface
 ```
 
 ## Advanced Usage
+
+### Multi-Factor Authentication (verify without logging in)
+
+`login()` verifies the password and marks the session authenticated in one step.
+For MFA, split it:
+
+```php
+$identity = $authenticator->verifyCredentials($username, $password); // ?Identity, session untouched
+if ($identity === null) { /* invalid credentials */ }
+// ... verify TOTP / WebAuthn ...
+$authenticator->completeLogin($request, $identity); // regenerates session id, sets AUTH_USER_ID/AUTH_TIME
+```
+
+### Session resolution
+
+When `SessionMiddleware` from dzentota/session runs, it stores a per-request
+`SessionManager` in the `SessionMiddleware::SESSION_ATTRIBUTE` request attribute.
+`Authenticator` always uses that instance when present; the constructor-injected
+`SessionManager` (now optional) is only a fallback. If neither exists a
+`LogicException` is thrown.
 
 ### Custom Credential Store
 
@@ -427,10 +447,10 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 $responseFactory = new Psr17Factory(); // any PSR-17 implementation
 
 // Hard gate — 401 if no valid token:
-$router->group('/api', function (Router $router) {
+$router->addGroup('/api', function (Router $router) {
     $router->get('/me', ProfileApiController::class);
     $router->get('/orders', OrdersApiController::class);
-})->middleware(new RequirePasetoToken($tokenService, $responseFactory));
+}, [new RequirePasetoToken($tokenService, $responseFactory)]);
 
 // Soft inject — identity available when token present, null otherwise:
 $router->get('/feed', FeedController::class)
@@ -483,14 +503,14 @@ Session and token middleware can coexist on different route groups:
 
 ```php
 // Web routes — session-based auth
-$router->group('/app', function (Router $router) {
+$router->addGroup('/app', function (Router $router) {
     $router->get('/dashboard', DashboardController::class);
-})->middleware(new RequireAuthentication($authenticator, $responseFactory));
+}, [new RequireAuthentication($authenticator, $responseFactory)]);
 
 // API routes — token-based auth
-$router->group('/api', function (Router $router) {
+$router->addGroup('/api', function (Router $router) {
     $router->get('/data', DataApiController::class);
-})->middleware(new RequirePasetoToken($tokenService, $responseFactory));
+}, [new RequirePasetoToken($tokenService, $responseFactory)]);
 ```
 
 ## Security Considerations
