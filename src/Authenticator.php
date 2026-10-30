@@ -2,6 +2,7 @@
 
 namespace Dzentota\Identity;
 
+use Dzentota\Session\Middleware\SessionMiddleware;
 use Dzentota\Session\SessionManager;
 use Psr\Http\Message\ServerRequestInterface;
 use Dzentota\Identity\Exception\AuthenticationException;
@@ -12,7 +13,7 @@ use Dzentota\Identity\Exception\AuthenticationException;
 class Authenticator
 {
     private CredentialStore $credentials;
-    private SessionManager $sessions;
+    private ?SessionManager $sessions;
     private array $config;
 
     /** @var string The session key for storing the user ID */
@@ -32,12 +33,13 @@ class Authenticator
 
     /**
      * @param CredentialStore $credentials
-     * @param SessionManager $sessions
+     * @param SessionManager|null $sessions Fallback session manager, used only when the request
+     *        carries no SessionManager in the SessionMiddleware::SESSION_ATTRIBUTE attribute
      * @param array $config Argon2id hashing options (memory_cost, time_cost, threads)
      */
     public function __construct(
         CredentialStore $credentials,
-        SessionManager $sessions,
+        ?SessionManager $sessions = null,
         array $config = [
             'memory_cost' => PASSWORD_ARGON2_DEFAULT_MEMORY_COST,
             'time_cost'   => PASSWORD_ARGON2_DEFAULT_TIME_COST,
@@ -68,12 +70,23 @@ class Authenticator
             throw AuthenticationException::invalidCredentials();
         }
 
-        $this->sessions->start($request);
-        $this->sessions->regenerateId();
-        $this->sessions->set(self::AUTH_USER_ID, $identity->getId());
-        $this->sessions->set(self::AUTH_TIME, time());
+        $this->completeLogin($request, $identity);
 
         return $identity;
+    }
+
+    /**
+     * Mark the session as authenticated for an identity whose credentials (and any
+     * additional factors) have already been verified. Regenerates the session ID
+     * to prevent session fixation and records AUTH_USER_ID / AUTH_TIME.
+     */
+    public function completeLogin(ServerRequestInterface $request, Identity $identity): void
+    {
+        $session = $this->session($request);
+        $session->start($request);
+        $session->regenerateId();
+        $session->set(self::AUTH_USER_ID, $identity->getId());
+        $session->set(self::AUTH_TIME, time());
     }
 
     /**
@@ -81,8 +94,9 @@ class Authenticator
      */
     public function logout(ServerRequestInterface $request): void
     {
-        $this->sessions->start($request);
-        $this->sessions->destroy();
+        $session = $this->session($request);
+        $session->start($request);
+        $session->destroy();
     }
 
     /**
@@ -90,9 +104,10 @@ class Authenticator
      */
     public function getCurrentIdentity(ServerRequestInterface $request): ?Identity
     {
-        $this->sessions->start($request);
+        $session = $this->session($request);
+        $session->start($request);
 
-        $userId = $this->sessions->get(self::AUTH_USER_ID);
+        $userId = $session->get(self::AUTH_USER_ID);
 
         if (!$userId) {
             return null;
@@ -102,8 +117,8 @@ class Authenticator
 
         if (!$identity) {
             // User no longer exists; clear stale session data
-            $this->sessions->remove(self::AUTH_USER_ID);
-            $this->sessions->remove(self::AUTH_TIME);
+            $session->remove(self::AUTH_USER_ID);
+            $session->remove(self::AUTH_TIME);
             return null;
         }
 
@@ -123,13 +138,14 @@ class Authenticator
      */
     public function getAuthTime(ServerRequestInterface $request): ?int
     {
-        $this->sessions->start($request);
+        $session = $this->session($request);
+        $session->start($request);
 
-        if (!$this->sessions->get(self::AUTH_USER_ID)) {
+        if (!$session->get(self::AUTH_USER_ID)) {
             return null;
         }
 
-        return $this->sessions->get(self::AUTH_TIME);
+        return $session->get(self::AUTH_TIME);
     }
 
     /**
@@ -144,9 +160,12 @@ class Authenticator
     /**
      * Verify credentials and return the matching Identity, or null on failure.
      * Uses a constant-time dummy comparison when the username is not found to
-     * prevent username enumeration via response-time analysis.
+     * prevent username enumeration via response-time analysis, and transparently
+     * rehashes the password if the hashing parameters changed.
+     *
+     * Does NOT touch the session: call completeLogin() once all factors pass.
      */
-    private function verifyCredentials(string $username, string $password): ?Identity
+    public function verifyCredentials(string $username, string $password): ?Identity
     {
         $credentials = $this->credentials->fetchByUsername($username);
 
@@ -165,5 +184,23 @@ class Authenticator
         }
 
         return $this->credentials->fetchIdentity($credentials['id']);
+    }
+
+    /**
+     * Resolve the session manager for this request: the per-request instance put
+     * there by SessionMiddleware wins over the constructor-injected fallback.
+     */
+    private function session(ServerRequestInterface $request): SessionManager
+    {
+        $fromRequest = $request->getAttribute(SessionMiddleware::SESSION_ATTRIBUTE);
+        if ($fromRequest instanceof SessionManager) {
+            return $fromRequest;
+        }
+        if ($this->sessions !== null) {
+            return $this->sessions;
+        }
+        throw new \LogicException(
+            'No SessionManager available: add SessionMiddleware or pass one to the Authenticator constructor.'
+        );
     }
 }
